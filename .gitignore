@@ -1,0 +1,6 @@
+misc/
+.cquery
+.lvimrc
+build/
+tags
+upload_script.sh

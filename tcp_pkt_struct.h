@@ -31,14 +31,11 @@ typedef struct {
 } pkt_meta;
 #pragma pack(pop)
 
+
+
+
 typedef struct {
     uint32_t seq_no;
-} hash_key;
-
-
-
-typedef struct {
-    hash_key key;
     char *buf;
     int buf_len;
     UT_hash_handle hh;

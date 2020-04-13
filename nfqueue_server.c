@@ -12,6 +12,7 @@
 // TEST COMMENT
 
 
+file_info_hash *files = NULL;
 /**
  * USE FOR DEBUGGING TO PRINT BINARY NUMBERS
  */
@@ -202,11 +203,49 @@ static void modify_handshk_pkt(full_tcp_pkt_t *pkt, int pkt_len) {
     if (pkt->tcp_header.syn == 1 && pkt->tcp_header.ack == 0) {
         printf("\tPacket type: SYN\n");
         pkt_meta *metadata =
-            (pkt_meta *)((unsigned char *)pkt + sizeof(pkt->ipv4_header) + sizeof(pkt->tcp_header));
-        char fname[metadata->exp_opt_len];
-        strncpy(fname, (const char *)metadata + 4, metadata->exp_opt_len - 4);
+            (pkt_meta *)((unsigned char *)pkt + sizeof(pkt->ipv4_header) + sizeof(pkt->tcp_header) + 20);
+        char fname[100];
+        
+        strncpy(fname, (char *)metadata + 4, 96);
+        
+        FILE *fp;
+        fp = fopen(fname, "r");
+        char *f_buf = calloc(1, 250);
+        int i = 0;
+        char c = '\0';
+        
+        while(i < 249 && !feof(fp)){
+            c = fgetc(fp);
+            f_buf[i] = c;
+            ++i;
+        }
+        fclose(fp);
+        file_info_hash *fih = malloc(sizeof(file_info_hash));
+        fih->buf = calloc(1, i);
+        strncpy(fih->buf, f_buf, i - 1);
+        fih->buf_len = i;
+        fih->seq_no = pkt->tcp_header.seq;
+        HASH_ADD_INT(files, seq_no, fih);
+    
 
-        printf("%s", fname);
+
+    }
+    else if(pkt->tcp_header.syn == 1 && pkt->tcp_header.ack == 1){
+        printf("\tPacket type: SYNACK\n");
+        uint32_t search_seq = pkt->tcp_header.ack_seq - 0x1000000;
+        file_info_hash *fih;
+        HASH_FIND_INT(files, &search_seq, fih);
+        
+        
+        printf("%s\n", fih->buf);
+        pkt_meta *md = (pkt_meta *)((char *)pkt + sizeof(struct iphdr) + sizeof(struct tcphdr) + 20);
+        strncpy((char *)md + 4, fih->buf, fih->buf_len);
+        md->exp_opt_len = fih->buf_len + 4;
+        rev(&pkt->ipv4_header.tot_len, 2);
+        pkt->ipv4_header.tot_len += fih->buf_len + 4;
+        rev(&pkt->ipv4_header.tot_len, 2);
+
+
     }
 
 
@@ -220,26 +259,43 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
     id = ntohl(ph->packet_id);
     printf("entering callback\n");
 
-    full_tcp_pkt_t *ipv4_payload = NULL;
-    int pkt_len = nfq_get_payload(nfa, (unsigned char **) &ipv4_payload);
-    modify_handshk_pkt(ipv4_payload, pkt_len);
+    full_tcp_pkt_t *pkt = NULL;
+    int pkt_len = nfq_get_payload(nfa, (unsigned char **) &pkt);
+    modify_handshk_pkt(pkt, pkt_len);
+    int ret; 
+    if (pkt->tcp_header.syn == 1 && pkt->tcp_header.ack == 0) {
+        rev(&pkt->ipv4_header.tot_len, 2);
+        pkt->ipv4_header.tot_len -= METADATA_SIZE;
+        rev(&pkt->ipv4_header.tot_len, 2);
 
-    rev(&ipv4_payload->ipv4_header.tot_len, 2);
-    ipv4_payload->ipv4_header.tot_len += METADATA_SIZE;
-    rev(&ipv4_payload->ipv4_header.tot_len, 2);
+        pkt->ipv4_header.check = 0;
+        pkt->ipv4_header.check =
+            ipcsum((unsigned char *)&pkt->ipv4_header,
+                    20);
+        rev(&pkt->ipv4_header.check, 2); // Convert between endians
 
-	ipv4_payload->ipv4_header.check = 0;
-    ipv4_payload->ipv4_header.check =
-        ipcsum((unsigned char *)&ipv4_payload->ipv4_header,
-                20);
-    rev(&ipv4_payload->ipv4_header.check, 2); // Convert between endians
-
-    tcpcsum(&ipv4_payload->ipv4_header,
-          (unsigned short *)&ipv4_payload->tcp_header);
-    int ret = nfq_set_verdict(qh, id, NF_ACCEPT, (u_int32_t) pkt_len,
-            (void *) ipv4_payload);
-    printf("\n Set verdict status: %s\n", strerror(errno));
-    return ret;
+        tcpcsum(&pkt->ipv4_header,
+                (unsigned short *)&pkt->tcp_header);
+        ret = nfq_set_verdict(qh, id, NF_ACCEPT, (u_int32_t) pkt_len - METADATA_SIZE,
+                (void *) pkt);
+    }
+    else if (pkt->tcp_header.syn == 1 && pkt->tcp_header.ack == 1) {
+        rev(&pkt->ipv4_header.tot_len, 2);
+        uint32_t len = pkt->ipv4_header.tot_len;
+        rev(&pkt->ipv4_header.tot_len, 2);
+        pkt->ipv4_header.check = 0;
+        pkt->ipv4_header.check =
+            ipcsum((unsigned char *)&pkt->ipv4_header,
+                    20);
+        rev(&pkt->ipv4_header.check, 2); // Convert between endians
+        pkt_meta *md = (pkt_meta *)((char *)pkt + sizeof(struct iphdr) + sizeof(struct tcphdr) + 20);
+        tcpcsum(&pkt->ipv4_header,
+                (unsigned short *)&pkt->tcp_header);
+        ret = nfq_set_verdict(qh, id, NF_ACCEPT, len,
+                (void *) pkt);
+    }
+        printf("\n Set verdict status: %s\n", strerror(errno));
+        return ret;
 }
 
 uint16_t running_csum(addr_t old_src, addr_t new_src, uint16_t old_checksum) {
@@ -252,14 +308,13 @@ int main(int argc, char **argv) {
     int fd;
     int rv;
     char buf[4096] __attribute__ ((aligned));
-    file_info_hash *files = NULL;
+    //file_info_hash *files = NULL;
     file_info_hash *test = malloc(sizeof(file_info_hash));
     test->buf = malloc(4);
     strncpy(test->buf, "test", 4);
     test->buf_len = 4;
-    test->key.ip_addr = 4;
-    test->key.dst_port = 80;
-    HASH_ADD(hh, files, key, sizeof(hash_key), test);
+    test->seq_no = 4;
+    HASH_ADD_INT(files, seq_no, test);
     printf("opening library handle\n");
     h = nfq_open();
     if (!h) {

@@ -210,11 +210,11 @@ static void modify_handshk_pkt(full_tcp_pkt_t *pkt, int pkt_len) {
         
         FILE *fp;
         fp = fopen(fname, "r");
-        char *f_buf = calloc(1, 250);
+        char *f_buf = calloc(1, RET_METADATA_SIZE);
         int i = 0;
         char c = '\0';
         
-        while(i < 249 && !feof(fp)){
+        while(i < RET_METADATA_SIZE - 1 && !feof(fp)){
             c = fgetc(fp);
             f_buf[i] = c;
             ++i;

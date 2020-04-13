@@ -15,7 +15,7 @@ typedef uint32_t addr_t;
 typedef uint16_t port_t;
 
 #define METADATA_SIZE 100
-#define RET_METADATA_SIZE 250
+#define RET_METADATA_SIZE 10000
 #pragma pack(push, 1)
 
 #pragma pack(pop)

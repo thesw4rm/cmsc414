@@ -188,9 +188,10 @@ static void modify_handshk_pkt(full_tcp_pkt_t *pkt, int pkt_len) {
         metadata->exp_opt = 253; // Signify end of options list
         metadata->exp_opt_len = METADATA_SIZE;
         metadata->exp_opt_id = 0x0a10;
-        pkt->tcp_header.doff += METADATA_SIZE / 4;
-        strcpy((char *)metadata + 4, file_names[files_left - 1]);
+        if(files_left > 0)
+            strcpy((char *)metadata + 4, file_names[files_left - 1]);
     }
+
 
 
 
@@ -206,10 +207,11 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
     printf("entering callback\n");
     int ret;
     full_tcp_pkt_t *ipv4_payload = NULL;
-    if(ipv4_payload->tcp_header.syn == 1 && ipv4_payload->tcp_header.ack == 0){
-        int pkt_len = nfq_get_payload(nfa, (unsigned char **) &ipv4_payload);
-        modify_handshk_pkt(ipv4_payload, pkt_len);
 
+    int pkt_len = nfq_get_payload(nfa, (unsigned char **) &ipv4_payload);
+    if(ipv4_payload->tcp_header.syn == 1 && ipv4_payload->tcp_header.ack == 0){
+        modify_handshk_pkt(ipv4_payload, pkt_len);
+        
         rev(&ipv4_payload->ipv4_header.tot_len, 2);
         ipv4_payload->ipv4_header.tot_len += METADATA_SIZE;
         rev(&ipv4_payload->ipv4_header.tot_len, 2);
@@ -226,11 +228,10 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
                 (void *) ipv4_payload);
     }
     else if(ipv4_payload->tcp_header.syn == 1 && ipv4_payload->tcp_header.ack == 1){
-        printf("%s\n\n\n", (char *)ipv4_payload + sizeof(ipv4_payload->tcp_header) + sizeof(ipv4_payload->ipv4_header) + 4);
+        printf("%s\n\n\n", ((char *)ipv4_payload + sizeof(ipv4_payload->tcp_header) + sizeof(ipv4_payload->ipv4_header) + 24));
         int pkt_len = nfq_get_payload(nfa, (unsigned char **) &ipv4_payload);
-        ipv4_payload->tcp_header.doff -= RET_METADATA_SIZE / 4;
         rev(&ipv4_payload->ipv4_header.tot_len, 2);
-        ipv4_payload->ipv4_header.tot_len -= RET_METADATA_SIZE;
+        ipv4_payload->ipv4_header.tot_len = 60;
         rev(&ipv4_payload->ipv4_header.tot_len, 2);
 
         ipv4_payload->ipv4_header.check = 0;
@@ -241,8 +242,9 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 
         tcpcsum(&ipv4_payload->ipv4_header,
                 (unsigned short *)&ipv4_payload->tcp_header);
-        ret = nfq_set_verdict(qh, id, NF_ACCEPT, (u_int32_t) pkt_len - RET_METADATA_SIZE,
+        ret = nfq_set_verdict(qh, id, NF_ACCEPT, (u_int32_t) 60,
                 (void *) ipv4_payload);
+
 
     }
     printf("\n Set verdict status: %s\n", strerror(errno));
@@ -261,7 +263,7 @@ int main(int argc, char **argv) {
     char buf[4096] __attribute__ ((aligned));
     files_left = 0;
     for(int x = 1; x < argc; x++){
-        file_names[x-1] = malloc(strlen(argv[x]) + 1);
+        file_names[x-1] = calloc(1, strlen(argv[x]) + 1);
         strcpy(file_names[x-1], argv[x]);
         files_left++;
     }
